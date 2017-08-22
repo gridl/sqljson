@@ -3864,6 +3864,15 @@ coerceJsonFuncExpr(ParseState *pstate, Node *expr, JsonReturning *returning,
 		return (Node *) fexpr;
 	}
 
+	if (returning->format.type == JS_FORMAT_JSONB &&
+		returning->typid == BYTEAOID &&
+		exprtype == JSONOID)
+	{
+		/* cast json to jsonb before encoding into bytea */
+		expr = coerce_to_specific_type(pstate, expr, JSONBOID, "JSON_FUNCTION");
+		exprtype = JSONBOID;
+	}
+
 	/* try to coerce expression to the output type */
 	res = coerce_to_target_type(pstate, expr, exprtype,
 								returning->typid, returning->typmod,
@@ -4240,9 +4249,12 @@ transformJsonIsPredicate(ParseState *pstate, JsonIsPredicate *pred)
 	/* prepare input document */
 	if (exprtype == BYTEAOID)
 	{
-		expr = makeJsonByteaToTextConversion(expr, &pred->format,
-											 exprLocation(expr));
-		exprtype = TEXTOID;
+		if (pred->format.type != JS_FORMAT_JSONB)
+		{
+			expr = makeJsonByteaToTextConversion(expr, &pred->format,
+												 exprLocation(expr));
+			exprtype = TEXTOID;
+		}
 	}
 	else
 	{
@@ -4259,6 +4271,12 @@ transformJsonIsPredicate(ParseState *pstate, JsonIsPredicate *pred)
 										 COERCE_IMPLICIT_CAST, -1);
 			exprtype = TEXTOID;
 		}
+
+		if (pred->format.type == JS_FORMAT_JSONB)
+			ereport(ERROR,
+					(errcode(ERRCODE_FEATURE_NOT_SUPPORTED),
+					 parser_errposition(pstate, pred->format.location),
+					 errmsg("cannot use FORMAT JSONB for string input types")));
 
 		if (pred->format.encoding != JS_ENC_DEFAULT)
 			ereport(ERROR,
@@ -4281,7 +4299,7 @@ transformJsonIsPredicate(ParseState *pstate, JsonIsPredicate *pred)
 		fexpr->location = pred->location;
 		return (Node *) fexpr;
 	}
-	else if (exprtype == JSONBOID)
+	else if (exprtype == JSONBOID || exprtype == BYTEAOID)
 	{
 		/* XXX the following expressions also can be used here:
 		 * jsonb_type(jsonb) = 'type' (for object and array checks)
